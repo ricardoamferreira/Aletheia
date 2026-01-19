@@ -1,7 +1,9 @@
 import json
 from typing import Annotated, List, TypedDict
 
+import requests
 import streamlit as st
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
@@ -39,16 +41,52 @@ class AgentState(TypedDict, total=False):
     final_report: dict
 
 
+@tool
+def scrape_website(url: str):
+    """Scrapes the content of a specific URL to get detailed information."""
+    try:
+        # 1. Fake a browser header
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+
+        # 2. Parse the HTML
+        soup = BeautifulSoup(response.content, "html.parser")
+
+        # 3. Kill javascript and styles (we only want text)
+        for script in soup(["script", "style", "nav", "footer"]):
+            script.extract()
+
+        # 4. Get text and clean it up
+        text = soup.get_text()
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        clean_text = "\n".join(chunk for chunk in chunks if chunk)
+
+        # 5. Limit to first 5,000 characters to save tokens
+        return clean_text[:5000]
+
+    except Exception as e:
+        return f"Error scraping {url}: {str(e)}"
+
+
 search_tool = TavilySearch(max_results=3)
 
 
 @tool
-def submit_report(report: ResearchReport):
-    """Call this tool when you have gathered all necessary information to submit the final report."""
+def submit_report(summary: str, competitors: List[Competitor], sources: List[str]):
+    """Call this tool when you have gathered all necessary information to submit the final report.
+
+    Args:
+        summary: Executive summary of the market landscape
+        competitors: List of analysed competitors
+        sources: List of URLs used for research
+    """
     return "Report submitted."
 
 
-tools = [search_tool, submit_report]
+tools = [search_tool, scrape_website, submit_report]
 
 # Brain
 llm = ChatOpenAI(model="gpt-4o", temperature=0)
@@ -60,27 +98,52 @@ def agent_node(state: AgentState):
 
 
 def tool_node(state: AgentState):
+    """Executes tools. If submit_report is called, updates the final_report state."""
     last_msg = state["messages"][-1]
-    if last_msg.tool_calls[0]["name"] == "submit_report":
-        return {"final_report": last_msg.tool_calls[0]["args"]}
 
-    # Otherwise, run standard tools (Search)
-    return ToolNode(tools).invoke(state)
+    # Check if we have tool *calls*
+    if not last_msg.tool_calls:
+        # Should not happen based on logic, but specific safety check
+        return ToolNode(tools).invoke(state)
+
+    final_report_data = None
+
+    # Check all tool calls for submit_report
+    for tool_call in last_msg.tool_calls:
+        if tool_call["name"] == "submit_report":
+            final_report_data = tool_call["args"]
+            break  # Take the first one if multiple (unlikely)
+
+    # Run all tools normally to generate valid ToolMessages for history
+    result = ToolNode(tools).invoke(state)
+
+    # If we captured a report, add it to the state update
+    if final_report_data:
+        result["final_report"] = final_report_data
+
+    return result
 
 
 def should_continue(state: AgentState):
+    """Decide whether to continue to tools or end."""
     last_msg = state["messages"][-1]
 
-    # If no tool called, force it to stop (or loop back, but usually implies error here)
+    # If no tool called, we can't do anything -> END
     if not last_msg.tool_calls:
         return END
 
-    # If the tool called is "submit_report", we are done!
-    if last_msg.tool_calls[0]["name"] == "submit_report":
+    # Ensure we define the logic for going to tools
+    return "tools"
+
+
+def route_after_tools(state: AgentState):
+    """Check if we should end or go back to agent."""
+    # If final_report is populated, we are done
+    if state.get("final_report"):
         return END
 
-    # Otherwise, go to tools to execute the search
-    return "tools"
+    # Otherwise, loop back to the agent
+    return "agent"
 
 
 builder = StateGraph(AgentState)
@@ -88,8 +151,8 @@ builder.add_node("agent", agent_node)
 builder.add_node("tools", tool_node)
 
 builder.add_edge(START, "agent")
-builder.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
-builder.add_edge("tools", "agent")  # Loop back after searching
+builder.add_conditional_edges("agent", should_continue, ["tools", END])
+builder.add_conditional_edges("tools", route_after_tools, ["agent", END])
 
 agent_executor = builder.compile()
 
@@ -112,10 +175,10 @@ if st.button("Initialize Agent") and user_query:
         Your goal is to gather data and submit a detailed report.
         
         CRITICAL RULES:
-        1. You must NOT reply with conversational text or summaries.
-        2. You must continue using the 'tavily_search_results_json' tool until you have all the data.
-        3. When you call 'submit_report', you MUST pass the 'summary', 'competitors', and 'sources' fields. 
-        4. DO NOT call 'submit_report' with empty arguments.
+        1. Use 'tavily_search_results_json' to find relevant URLs.
+        2. MANDATORY: Use 'scrape_website' to read the actual content of promising URLs. Do not rely solely on search snippets.
+        3. DO NOT REPLY WITH TEXT. You must call the 'submit_report' tool to complete the mission.
+        4. If you have enough info, call 'submit_report' immediately.
     """
     )
 
@@ -131,6 +194,10 @@ if st.button("Initialize Agent") and user_query:
     final_data = None
 
     for event in events:
+        # Check if the final report is in the state (most reliable)
+        if "final_report" in event and event["final_report"]:
+            final_data = event["final_report"]
+
         if "messages" in event:
             last_msg = event["messages"][-1]
 
@@ -140,7 +207,7 @@ if st.button("Initialize Agent") and user_query:
                     st.markdown(f"**🔎 Source Found:**")
                     st.code(last_msg.content[:300] + "...")
 
-                # B. Check if the Agent is trying to submit the report
+                # B. Show thinking (optional, mostly for debug now since we capture final_report from state)
                 elif last_msg.type == "ai" and last_msg.tool_calls:
                     tool_name = last_msg.tool_calls[0]["name"]
                     tool_args = last_msg.tool_calls[0]["args"]
@@ -148,12 +215,7 @@ if st.button("Initialize Agent") and user_query:
                     st.write(f"Thinking: calling {tool_name}...")
 
                     if tool_name == "submit_report":
-                        st.warning(f"DEBUG: Raw Arguments received: {tool_args}")
-
-                        if "report" in tool_args:
-                            final_data = tool_args["report"]
-                        else:
-                            final_data = tool_args
+                        st.info("Submitting report...")
     # 3. Render the Final Report
     if final_data:
         st.success("Report Generated Successfully!")
