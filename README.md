@@ -5,6 +5,7 @@ Aletheia is an autonomous AI research agent designed to perform deep market anal
 ## 🚀 Key Features
 
 * **Cyclic Reasoning Loop:** Built on `LangGraph`, the agent cycles through a "Reason → Act → Observe" loop until it has sufficient data.
+* **Deep Web Scraping:** Goes beyond search snippets by autonomously visiting and scraping promising URLs for full context.
 * **Structured Data Extraction:** Enforces a rigid Pydantic schema to output clean JSON data (tables) rather than unstructured text.
 * **Defensive State Management:** Handles nested tool outputs and partial failures robustly.
 * **Live Thinking Process:** Visualises the agent's internal thought process and tool usage in real-time via Streamlit.
@@ -15,6 +16,7 @@ Aletheia is an autonomous AI research agent designed to perform deep market anal
 * **Orchestration:** LangChain & LangGraph (StateGraph implementation)
 * **LLM:** OpenAI GPT-4o
 * **Search Engine:** Tavily AI (Optimised for LLM retrieval)
+* **Scraping:** Requests & BeautifulSoup
 * **Frontend:** Streamlit
 
 ## ⚙️ Architecture
