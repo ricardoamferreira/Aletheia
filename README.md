@@ -1,4 +1,4 @@
-# 🏛️ Aletheia: Autonomous Truth Engine
+# 🏛️ Aletheia: Autonomous Truth Engine (WIP)
 
 Aletheia is an autonomous AI research agent designed to perform deep market analysis, verify facts, and generate structured executive reports. Unlike standard chatbots, Aletheia uses a **cyclic graph architecture** (LangGraph) to iterate on searches, self-correct, and ensure data accuracy before submitting a final structured payload.
 
