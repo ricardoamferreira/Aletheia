@@ -1,0 +1,9 @@
+# Security 
+.env
+
+# Python junk
+__pycache__/
+*.py[cod]
+
+# Virtual Environment 
+.venv/
